@@ -9,24 +9,34 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Introduction to Cluster Analysis
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Clustering analysis is a technique used to group objects, observations or data points. It is commonly used in customer segmentation to identify purchasing patterns or behaviors. In general its a very useful technique with many applications exploratory data analysis.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Where the idea is that:
 
-```{r}
+-   Observations in the same group/cluster = similar
+
+-   Observations from different groups/cluster = different
+
+There are different clustering algorithms , however in this case we will try two of the most common **k-means** & **DBSCAN.** Each algorithm has its own properties, assumptions and constraints so normally they produce different results. So let's explore the performance and results from these two for this specific dataset.
+
+```{r, echo=FALSE}
 library(readr)
 library(tidyverse)
 library(factoextra)
 library(clValid)
 library(NbClust)
 library(dbscan)
+library(ggplot2)
+library(quantmod)
+library(inflection)
+library(emmeans)
 ```
 
-## 1) Downloading customer dataset 
+## 1) Downloading customer dataset
 
-You can also embed plots, for example:
+For this analysis a customer dataset available from Kaggle
 
 ```{r pressure, echo=FALSE}
 
@@ -36,7 +46,291 @@ Sys.setenv(KAGGLE_CONFIG_DIR = "../../Kaggle/kaggle")
 # Download the dataset
 system("kaggle datasets download -d vjchoudhary7/customer-segmentation-tutorial-in-python")
 
+unzip("customer-segmentation-tutorial-in-python.zip", exdir = "../data")
+
+#read data
+cust_raw <- read_csv('../data/Mall_Customers.csv')
 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## **2)Transforming variables**
+
+The second step is reformatting our data and preparing it for the analysis. This consists of recoding categories into binary variables and standardizing the numeric variables. The standarization serves as a common rescaling for continous variables that have different measurement scales. The purpose is to ensure all variables have the same weight when calculating the clusters, as the clustering analysis overweight variables with higher variance.
+
+```{r}
+#transform gender to binary values
+cust_raw <- cust_raw %>% mutate(Gender = case_when(Gender == 'Male' ~ 1,
+                             Gender == 'Female' ~ 0, .default= TRUE))
+#lets take a peek
+summary(cust_raw)
+
+```
+
+According to summary statistics the population sample is composed by (n= 200) customers from 18 to 70 years old around 38-39 years old with 44% being males and 56% being female. Their income ranges from \$15k to \$137k however most people earn around \~\$61k per year.
+
+It's always a good idea to deep dive into the grouping variables to see relationships between them.
+
+```{r}
+#lets create a correlation plot
+
+```
+
+```{r}
+#standardize values
+cust_std <- cust_raw %>% mutate(Age = scale(Age),
+                                Income = scale(`Annual Income (k$)`),
+                                SScore = scale(`Spending Score (1-100)`)) 
+      
+
+#removing unused columns and customer ID
+cust_std <- cust_std %>% select(Gender, Age, Income, SScore)
+
+```
+
+## 3) How many clusters?
+
+Now this is the **MAIN** question. By default is hard to know how many groups or sub-groups are hidden in the data. In real life scenarios you might have restrictions by how many customer segments you can target from a practical and cost perspective, but in many other cases you might not even have those restrictions to guide you.
+
+**k-Means** is an algorithm that has been popularized by its approach of determining clusters using a pre-defined or specified number of clusters. So basically our data will be divided into a total number of groups we define in advance. k-Means starts by randomly selecting cluster 'centers' (named centroids) and then based on computed distance; normally 'euclidean distance' all the rest of data points will be assigned to the nearest center . This process is repeated by recomputing the centers and reassigning the data points until the centroids don't move anymore.
+
+Comming back to the struggle, the hardest part is choosing how many clusters to select. Luckily, there are a few tests and metrics that help you choose the number of clusters using the **NbClust** package. It is worth mentioning that you still need to limit the minimum and maximum number of clusters. Which normally is dictated by the nature of the problem you are trying to solve. In this case the multiple indices suggest to use k = 6 clusters.
+
+### a) NbClust metrics
+
+```{r}
+
+set.seed(123456)
+
+#calculate metrics to determine optimal number of clusters
+optimal_nb<- NbClust(cust_std,distance= 'euclidean', min.nc=2, max.nc=8, method='kmeans')
+
+#results
+optimal_nb
+```
+
+### b) Elbow method
+
+A more visual and general approach is the **Elbow Method** that uses 'wss' Total Within Sum of Squares. The elbow method looks at the point at which adding an additional cluster does not reduce **within cluster sum of squares**. The idea is that the optimal number of clusters will be based on the first or second kink in the graph. Which in this case is around k= 4 clusters.
+
+```{r}
+set.seed(123456)
+#Plot variance reduction Elbow chart
+fviz_nbclust(cust_std, FUNcluster= kmeans, method = "wss", k.max = 8)
+```
+
+## 4) Time to cluster!
+
+Now its time for actually trying and testing for the best solution using k-Means. So based on the recommended groups we will try k= 4 & k = 6 solutions.
+
+```{r}
+set.seed(123456)
+#lets try the suggested number of clusters setting k=6
+kmeans_result <- kmeans(cust_std, centers= 6, nstart= 25)
+
+fviz_cluster(kmeans_result, cust_std)
+
+k6_cluster <- as.data.frame(kmeans_result$cluster)
+
+#bind cluster assignment to original df
+cust_cluster<- cbind(k6_cluster, cust_raw) %>% 
+  rename(cluster_k6 = `kmeans_result$cluster`)
+```
+
+```{r}
+set.seed(123456)
+#lets now try the Elbow method suggestion by setting k= 4
+kmeans_result2 <- kmeans(cust_std, centers= 4, nstart= 25)
+
+
+fviz_cluster(kmeans_result2, cust_std)
+
+k4_cluster <- as.data.frame(kmeans_result2$cluster)
+
+#bind cluster assignment to original df
+cust_cluster<- cbind(k4_cluster, cust_cluster) %>% 
+  rename(cluster_k4 = `kmeans_result2$cluster`)
+```
+
+The other very clustering algorithm is **DBSCAN** and contrary to k-Means this one requires no previous specification of number of clusters, instead parameters that limit the formation of clusters are part of the input. **DBSCAN** stands for **Density Based Spatial Clustering of Applications** **with Noise**, and its groups dense clouds of data points to form clusters. When there are isolated points these are excluded from clusters and called 'noise'.
+
+The algorithm randomly selects a starting point and if there are enough (**minPts**) neighbor data points within the maximum distance (**eps**) it forms a cluster. Then the neighboring points are checked and added if within the range. The process is repeated until no more points can be added to the cluster. Once a cluster is formed a new starting point is selected to try to form another cluster.
+
+**eps** - epsilon is the maximum distance for a k-neighbor to be considered part of a cluster.
+
+**minPts** - minimum number of points required to form a cluster.
+
+A general rule of thumb to set the minimum points is to use *2 x (number of features or dimensions)*. In our case we have 4 dimensions so minPts = 8.
+
+For the epsilon parameter the k distances are sorted and plotted to determine the maximum curvature or inflection point. In this plot a red horizontal dashed line shows the eps value.
+
+```{r}
+
+#minimum points for creating a cluster
+minPts= 2*ncol(cust_std)
+minPts
+
+#calculating k distances
+k_distances <- kNNdist(cust_std, k= minPts-1)
+k_distances <-sort(k_distances)
+
+#plot k distances plot
+kNNdistplot(cust_std, k= minPts-1)
+
+#determine inflection point
+eps<- findiplist(c(1:length(k_distances)),k_distances, index= TRUE)
+eps<- eps['EDE','j1']
+eps<- k_distances[eps]
+eps
+
+#visually mark where the inflection point or max curvature point
+abline(h = eps, col = "red", lty = 2)
+```
+
+Once we have estimated both parameters its time to run the DBSCAN clustering. According to our parameters our cluster to be formed should have at least a dense cloud of minPts = 8 data points and the distance between them should be maximum eps = 1.149. After running the clustering algorithm we are able to notice that only one cluster is formed and only a couple of data points are isolated marked as noise. So in this particular case DBSCAN is not the best option to go for.
+
+```{r}
+#clustering using DBSCAN
+dbscan_clusters <- dbscan(cust_std, eps= eps, minPts= minPts)
+
+fviz_cluster(dbscan_clusters, cust_std)
+```
+
+## 5) Cluster results
+
+Now lets compare the clusters for each of the k-Mean solutions
+
+In the k= 6 cluster solution customers are grouped into very specific sub-groups. To note is that cluster '3' is the only male dominant cluster, this is quite interesting since the sample is composed 56% by women and 44% by men, so this proportion indicates a gender related association. Apart from that there are more or less two clusters for each income level. Also worth to mention that cluster '6' is the one with the highest average age.
+
+| Cluster \# | Age            | Income        | Spend Score  | Gender          |
+|------------|----------------|---------------|--------------|-----------------|
+| 1          | Mid-age adults | Low income    | Low spend    | Female dominant |
+| 2          | Young adults   | Low income    | High spend   | Female dominant |
+| 3          | Mid-age adults | High income   | Low spend    | Male dominant   |
+| 4          | Young adults   | Medium income | Medium spend | Female dominant |
+| 5          | Young adults   | High income   | High spend   | Female dominant |
+| 6          | Old adults     | Medium income | Medium spend | Female dominant |
+
+```{r}
+cust_cluster %>% group_by(cluster_k6) %>% 
+  summarize(count = n(),
+            avg_age = round(mean(Age),2),
+            med_age = median(Age),
+            avg_income = round(mean(`Annual Income (k$)`),2),
+            med_income = round(median(`Annual Income (k$)`),2),
+            avg_SScore = round(mean(`Spending Score (1-100)`),2),
+            male_pct = round(100*mean(Gender),0),
+            female_pct= round(100*(1- mean(Gender)),0))
+
+```
+
+In the k=4 cluster solution customers are mainly grouped first into low vs high income and then split based somehow on age and spend score. It is easier to appreciate that the clusters here have a broader customer base. For example cluster '3' which is the smallest has 38 customers while in the other solution only cluster '6' was really bigger in size.
+
+| Cluster \# | Age            | Income      | Spend Score  | Gender          |
+|------------|----------------|-------------|--------------|-----------------|
+| 1          | Old adults     | Low income  | Medium spend | Female dominant |
+| 2          | Young adults   | Low income  | Medium spend | Female dominant |
+| 3          | Mid-age adults | High income | Low spend    | Balanced        |
+| 4          | Young adults   | High income | High Spend   | Female dominant |
+
+```{r}
+cust_cluster %>% group_by(cluster_k4 ) %>% 
+  summarize(count = n(),
+            avg_age = round(mean(Age),2),
+            med_age = median(Age),
+            avg_income = round(mean(`Annual Income (k$)`),2),
+            med_income = round(median(`Annual Income (k$)`),2),
+            avg_SScore = round(mean(`Spending Score (1-100)`),2),
+            male_pct = round(100*mean(Gender),0),
+            female_pct= round(100*(1- mean(Gender)),0))
+```
+
+## 6) Test clusters difference (ANOVA)
+
+Last stage is to see if variables among clusters differ statistically, this will tell us if customers from each cluster are truly different. For this an Multiple ANOVA test can be used to compare clusters. For the k = 4 clustering solution, the Multiple ANOVA test detected that only Gender does not differ among clusters.
+
+```{r}
+#Lets first conver the cluster to a factor before fitting
+cust_cluster$cluster_k4<- as.factor(cust_cluster$cluster_k4)
+levels(cust_cluster$cluster_k4)
+
+#fitting the MANOVA model
+cluster_anova_k4 <-  manova(cbind(Age, Gender, `Annual Income (k$)`, `Spending Score (1-100)`) ~ cluster_k4,cust_cluster )
+
+#see if at least one group differs
+summary(cluster_anova_k4)
+
+#see which variables differ among clusters
+summary.aov(cluster_anova_k4)
+```
+
+A more in depth approach is to pairwise compare the clusters for each variable and see how they differ. Lets explore the results for the k= 4 cluster solution.
+
+-   For Age variable all clusters are statistically different with p-val. \< 0.05.
+
+-   For Income variable almost all clusters are statistically different with p-val. \< 0.05 except clusters 3 and 4 that have almost equal mean income.
+
+-   For Spending Score variable all clusters are statistically different with p-val. \< 0.05.
+
+-   For Gender basically there is no difference between clusters as seen in the previous MANOVA test.
+
+```{r}
+#pairwise comparisons
+# Run separate ANOVAs for each variable
+age_anova <- aov(Age ~ cluster_k4, data = cust_cluster)
+income_anova <- aov(`Annual Income (k$)` ~ cluster_k4, data = cust_cluster)
+spend_anova <- aov(`Spending Score (1-100)` ~ cluster_k4, data = cust_cluster)
+gender_anova <- aov(Gender ~ cluster_k4, data= cust_cluster)
+
+# Tukey’s HSD for pairwise comparisons
+TukeyHSD(age_anova)
+TukeyHSD(income_anova)
+TukeyHSD(spend_anova)
+TukeyHSD(gender_anova)
+
+```
+
+In the k= 6 cluster solution the clusters again differ in all variables except for Gender.
+
+```{r}
+#code cluster group as factor
+cust_cluster$cluster_k6<- as.factor(cust_cluster$cluster_k6)
+levels(cust_cluster$cluster_k6)
+
+#fiting MANOVA
+cluster_anova_k6 <- manova(cbind(Age, Gender, `Annual Income (k$)`, `Spending Score (1-100)`) ~ cluster_k6, cust_cluster)
+
+summary(cluster_anova_k6)
+
+
+summary.aov(cluster_anova_k6)
+
+```
+
+Lets explore the results for the k= 6 cluster solution.
+
+-   For the Age variable we can see clusters 1 & 3 have similar age, the same goes for clusters 2 & 4.
+
+-   For Income variable clusters 1 & 2 have a very similar income level, as well as clusters 3 & 5 and clusters 4 & 6.
+
+-   For Spending Score clusters 1 & 3 spending level, as well as cluster 2 & 5 and clusters 4 & 6.
+
+-   For Gender as expected all clusters are very similar.
+
+```{r}
+age_anova2 <- aov(Age ~ cluster_k6, cust_cluster)
+income_anova2 <- aov(`Annual Income (k$)` ~ cluster_k6, data = cust_cluster)
+spend_anova2 <- aov(`Spending Score (1-100)` ~ cluster_k6, data = cust_cluster)
+gender_anova2 <- aov(Gender ~ cluster_k6, data= cust_cluster)
+
+
+TukeyHSD(age_anova2)
+TukeyHSD(income_anova2)
+TukeyHSD(spend_anova2)
+TukeyHSD(gender_anova2)
+```
+
+## 7) Takeaways
+
+So after testing the two k-means cluster solutions we can see that there a some drawbacks when choosing a higher number of clusters as we see some sort of overlapping of the cluster variables. However at the end of the day the optimal solution will be based on how transferable the clusters are to real life business scenarios and how easy it is to put them in practice!
+
+In my opinion the best solution is therefore the k=4 cluster solution!
