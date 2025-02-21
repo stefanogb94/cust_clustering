@@ -1,4 +1,4 @@
-# cust_clustering
+# Customer Clustering
 Customer clustering analysis 
 
 Clustering analysis is a technique used to group objects, observations or data points. It is commonly used in customer segmentation to identify purchasing patterns and behaviors. In general its a very useful technique with many applications in data analytics.
